@@ -1,163 +1,44 @@
-#include <Wire.h>
-#include <Adafruit_MPU6050.h>
-#include <Adafruit_Sensor.h>
-#include <BluetoothSerial.h>
-#include <math.h>
+Project Title:
+Ball IQ – Revolutionizing Play with Smart Ball
 
-// Sensor and Bluetooth objects
-Adafruit_MPU6050 mpu;
-BluetoothSerial SerialBT;
+Project Description:
+This is an internally funded student project aimed at enhancing cricket training by developing a smart cricket ball that captures key motion parameters like spin, speed, acceleration, and orientation. The system uses an MPU6050 sensor and ESP32 Pico microcontroller, all embedded inside a cricket ball. Data is transmitted wirelessly using Bluetooth and displayed on the Serial Bluetooth Terminal mobile app.
 
-// Kalman filter variables
-float velocity = 0;
-float P = 1, Q = 0.005, R = 1, K;
-float filtered_accel_x = 0, last_velocity = 0;
-unsigned long last_time = 0;
+Objective:
+The main goal is to track spin rate, speed, pitch, roll, and impact-related data during a throw. These metrics can help players understand and improve their performance.
 
-// Calibration bias
-float accel_bias_x = 0, gyro_bias_z = 0;
+Hardware Used:
 
-// Spin variables
-float angular_velocity_z = 0;
-float spin_rate = 0;
-float total_rotation = 0;
+ESP32 Pico (microcontroller with Bluetooth)
 
-// Orientation variables
-float pitch = 0, roll = 0;
-float alpha_orientation = 0.98; // Complementary filter weight
+MPU6050 (accelerometer + gyroscope)
 
-// Control flags
-bool capture = false;
-bool released = false;
+3.7V LiPo rechargeable battery
 
-// Stationary and release detection
-const float STATIONARY_THRESHOLD = 0.15;
-const float RELEASE_DROP_THRESHOLD = 6;
-static float prev_accel_mag = 0;
+TP4056 charging module
 
-void setup() {
-  Serial.begin(115200);
-  SerialBT.begin("SmartBall");
+Buck-boost converter for power regulation
 
-  if (!mpu.begin()) {
-    Serial.println("MPU6050 not found!");
-    while (1) delay(10);
-  }
+Enclosure inside a cricket ball
 
-  mpu.setAccelerometerRange(MPU6050_RANGE_4_G);
-  mpu.setGyroRange(MPU6050_RANGE_500_DEG);
-  mpu.setFilterBandwidth(MPU6050_BAND_21_HZ);
+How It Works:
+The MPU6050 captures acceleration and angular velocity data. This is processed by the ESP32, which calculates parameters like spin rate (from gyro Z-axis), speed (using acceleration data), and orientation (pitch and roll). The data is sent to a smartphone via Bluetooth and displayed in real-time using the Serial Bluetooth Terminal app.
 
-  delay(1000);
-  calibrateMPU();
-  last_time = millis();
+Mobile App Interface:
+We use the open-source Serial Bluetooth Terminal app (MIT License) on Android. It displays all live readings such as:
 
-  SerialBT.println("Send 'start' to begin tracking or 'stop' to end tracking.");
-}
+Speed in m/s
 
-void loop() {
-  // Check Bluetooth command
-  if (SerialBT.available()) {
-    String cmd = SerialBT.readStringUntil('\n');
-    cmd.trim();
-    if (cmd == "start") {
-      capture = true;
-      released = false;
-      velocity = 0;
-      last_velocity = 0;
-      total_rotation = 0;
-      last_time = millis();
-      SerialBT.println("Started tracking...");
-    } else if (cmd == "stop") {
-      capture = false;
-      velocity = 0;
-      last_velocity = 0;
-      total_rotation = 0;
-      SerialBT.println("Stopped tracking and reset state.");
-    }
-  }
+Spin rate in RPM
 
-  if (!capture) return;
+Roll and pitch angles
 
-  sensors_event_t a, g, temp;
-  mpu.getEvent(&a, &g, &temp);
+Acceleration and gyro values
 
-  // Bias-corrected raw values
-  float accel_x = a.acceleration.x - accel_bias_x;
-  angular_velocity_z = g.gyro.z - gyro_bias_z;
+Project Outcomes:
+We successfully tested the smart ball by throwing it under various conditions. The system provided accurate and real-time data, helping us analyze throws in terms of speed, spin, and movement. This information can be very useful for training, coaching, and performance analysis in cricket.
 
-  // Low-pass filter acceleration
-  float alpha = 0.3;
-  filtered_accel_x = alpha * accel_x + (1 - alpha) * filtered_accel_x;
 
-  // Time step
-  unsigned long current_time = millis();
-  float dt = (current_time - last_time) / 1000.0;
-  last_time = current_time;
-
-  // Kalman prediction step
-  float predicted_velocity = last_velocity + filtered_accel_x * dt;
-  P += Q;
-  K = P / (P + R);
-  velocity = predicted_velocity;
-  P *= (1 - K);
-  last_velocity = velocity;
-
-  // Spin computation
-  total_rotation += angular_velocity_z * dt;
-  spin_rate = fabs(angular_velocity_z * 9.5493);  // rad/s to RPM
-
-  // Complementary filter for pitch and roll
-  float pitch_acc = atan2(a.acceleration.y, sqrt(a.acceleration.x * a.acceleration.x + a.acceleration.z * a.acceleration.z)) * 180 / PI;
-  float roll_acc  = atan2(-a.acceleration.x, a.acceleration.z) * 180 / PI;
-  pitch = alpha_orientation * (pitch + g.gyro.x * dt * 180 / PI) + (1 - alpha_orientation) * pitch_acc;
-  roll  = alpha_orientation * (roll  + g.gyro.y * dt * 180 / PI) + (1 - alpha_orientation) * roll_acc;
-
-  // Release detection (based on total acceleration drop)
-  float acc_mag = sqrt(pow(a.acceleration.x, 2) + pow(a.acceleration.y, 2) + pow(a.acceleration.z, 2));
-  if (!released && prev_accel_mag > 12 && acc_mag < RELEASE_DROP_THRESHOLD) {
-    released = true;
-    SerialBT.println("Ball Released!");
-    Serial.println("Ball Released!");
-  }
-  prev_accel_mag = acc_mag;
-
-  // Stationary reset
-  if (fabs(filtered_accel_x) < STATIONARY_THRESHOLD && fabs(angular_velocity_z) < 0.05) {
-    velocity = 0;
-    last_velocity = 0;
-    total_rotation = 0;
-  }
-
-  // Send data via Bluetooth and Serial
-  String output = "Speed: " + String(velocity, 2) + " m/s\n";
-  output += "Spin Rate: " + String(spin_rate, 2) + " RPM\n";
-  output += "Pitch: " + String(pitch, 1) + "°\n";
-  output += "Roll: " + String(roll, 1) + "°\n";
-  output += "Accel X: " + String(filtered_accel_x, 2) + " m/s²\n";
-  output += "Gyro Z: " + String(angular_velocity_z, 2) + " rad/s\n";
-  output += "-------------------------\n";
-
-  Serial.print(output);
-  SerialBT.print(output);
-
-  delay(50); // Smoothing
-}
-
-void calibrateMPU() {
-  Serial.println("Calibrating...");
-  float sum_ax = 0, sum_gz = 0;
-  const int samples = 200;
-
-  for (int i = 0; i < samples; i++) {
-    sensors_event_t a, g, temp;
-    mpu.getEvent(&a, &g, &temp);
-    sum_ax += a.acceleration.x;
-    sum_gz += g.gyro.z;
-    delay(10);
-  }
-
-  accel_bias_x = sum_ax / samples;
-  gyro_bias_z = sum_gz / samples;
-  Serial.println("Calibration Done.");
-}
+  
+ 
+    
